@@ -37,6 +37,67 @@ class AnnualReportDownloader:
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
             'Referer': 'http://www.cninfo.com.cn/',
         }
+        
+        # 缓存 orgId，避免重复请求
+        self._org_id_cache: Dict[str, str] = {}
+    
+    def get_org_id(self, stock_code: str) -> Optional[str]:
+        """
+        通过 topSearch API 获取股票的 orgId
+        
+        Args:
+            stock_code: 股票代码（6位数字）
+        
+        Returns:
+            orgId 字符串，失败返回 None
+        """
+        # 检查缓存
+        if stock_code in self._org_id_cache:
+            return self._org_id_cache[stock_code]
+        
+        search_url = f"{self.base_url}/new/information/topSearch/query"
+        data = {
+            'keyWord': stock_code,
+            'maxNum': 10
+        }
+        
+        try:
+            response = requests.post(search_url, data=data, headers=self.headers, timeout=10)
+            response.raise_for_status()
+            
+            results = response.json()
+            
+            if not results or not isinstance(results, list):
+                print(f"未找到股票 {stock_code} 的信息")
+                return None
+            
+            # 遍历结果，找到精确匹配的股票代码
+            for item in results:
+                if item.get('code') == stock_code:
+                    org_id = item.get('orgId')
+                    if org_id:
+                        # 缓存结果
+                        self._org_id_cache[stock_code] = org_id
+                        print(f"获取到股票 {stock_code} 的 orgId: {org_id}")
+                        return org_id
+            
+            # 如果没有精确匹配，使用第一个结果
+            if results:
+                org_id = results[0].get('orgId')
+                if org_id:
+                    self._org_id_cache[stock_code] = org_id
+                    print(f"获取到股票 {stock_code} 的 orgId: {org_id}")
+                    return org_id
+            
+            print(f"未找到股票 {stock_code} 的 orgId")
+            return None
+            
+        except requests.RequestException as e:
+            print(f"获取 orgId 失败: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            print(f"解析 orgId 响应失败: {e}")
+            return None
     
     def search_announcements(self, stock_code: str, 
                            start_date: str = "",
@@ -55,17 +116,25 @@ class AnnualReportDownloader:
         # 使用历史公告查询接口
         search_url = f"{self.base_url}/new/hisAnnouncement/query"
         
-        # 判断市场，构造stock参数
-        # 上海股票格式：600519,gssh0600519
-        # 深圳股票格式：000001,gssz0000001
+        # 判断市场
         if stock_code.startswith(('60', '68', '58', '51')):
             plate = 'sh'
             column = 'sse'
-            stock_param = f"{stock_code},gssh0{stock_code}"
         else:
             plate = 'sz'
             column = 'szse'
-            stock_param = f"{stock_code},gssz0{stock_code}"
+        
+        # 通过 API 获取 orgId
+        org_id = self.get_org_id(stock_code)
+        if org_id:
+            stock_param = f"{stock_code},{org_id}"
+        else:
+            # 降级使用旧的拼接方式
+            print(f"警告: 无法获取 orgId，使用默认拼接方式")
+            if plate == 'sh':
+                stock_param = f"{stock_code},gssh0{stock_code}"
+            else:
+                stock_param = f"{stock_code},gssz0{stock_code}"
         
         # 格式化日期范围
         se_date = ""
